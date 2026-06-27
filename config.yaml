@@ -111,3 +111,51 @@ logging:
 ui:
   tray_enabled: true          # Ícone na bandeja do sistema
   notifications: true         # Notificações do sistema operacional
+
+# ─── TTS (Saída de Voz) ────────────────────────────────────────────────────────
+tts:
+  enabled: true
+  # "coqui" = local/offline, gratuito, ~120MB modelo vits pt-BR
+  # "elevenlabs" = cloud, mais natural, requer API key e internet
+  engine: coqui
+  coqui_model: tts_models/pt/cv/vits
+  coqui_gpu: false
+  elevenlabs_voice_id: "21m00Tcm4TlvDq8ikWAM"
+  elevenlabs_model_id: eleven_multilingual_v2
+  humanizer_max_chars: 800
+  humanizer_announce_code: true
+  stop_speaking_phrases:
+    - para de falar
+    - cala a boca
+    - silencia
+  sample_rate: 22050
+
+# ─── Captura de Resposta do Claude ────────────────────────────────────────────
+# Abordagem escolhida: subprocess com `claude --print`
+# Veja response_capture/claude_subprocess.py para justificativa completa.
+claude_capture:
+  enabled: true
+  claude_bin: claude              # binário do Claude Code no PATH
+  timeout_seconds: 60
+  max_history_turns: 10           # turnos de contexto mantidos entre calls
+  system_prompt: ""               # deixe vazio para usar o CLAUDE.md do projeto
+
+# ─── Auditoria ────────────────────────────────────────────────────────────────
+audit:
+  enabled: true
+  file: audit_log.jsonl
+  max_size_mb: 50
+
+# ─── MCP Servers ──────────────────────────────────────────────────────────────
+mcp:
+  filesystem:
+    enabled: false
+    # IMPORTANTE: nunca deixe allowed_paths vazio com enabled=true
+    # Liste explicitamente os diretórios que o Claude Code pode acessar:
+    allowed_paths:
+      # - ~/Projetos/meu-projeto
+      # - ~/Documentos/notas
+
+  browser:
+    enabled: false
+    headless: true                # false = abre janela visível do browser

@@ -66,4 +66,46 @@ DEFAULTS: dict = {
         "tray_enabled": True,
         "notifications": True,
     },
+
+    # ── TTS (saída de voz) ──────────────────────────────────────────────────────
+    "tts": {
+        "enabled": True,
+        "engine": "coqui",                     # "coqui" | "elevenlabs"
+        "coqui_model": "tts_models/pt/cv/vits",
+        "coqui_gpu": False,
+        "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
+        "elevenlabs_model_id": "eleven_multilingual_v2",
+        "humanizer_max_chars": 800,
+        "humanizer_announce_code": True,
+        "stop_speaking_phrases": ["para de falar", "cala a boca", "silencia"],
+        "sample_rate": 22050,
+    },
+
+    # ── Captura de resposta do Claude ───────────────────────────────────────────
+    "claude_capture": {
+        "enabled": True,
+        "claude_bin": "claude",
+        "timeout_seconds": 60,
+        "max_history_turns": 10,
+        "system_prompt": "",               # sobrescreve CLAUDE.md se preenchido
+    },
+
+    # ── Auditoria ───────────────────────────────────────────────────────────────
+    "audit": {
+        "enabled": True,
+        "file": "audit_log.jsonl",
+        "max_size_mb": 50,
+    },
+
+    # ── MCP Servers ─────────────────────────────────────────────────────────────
+    "mcp": {
+        "filesystem": {
+            "enabled": False,
+            "allowed_paths": [],           # DEVE ser configurado pelo usuário
+        },
+        "browser": {
+            "enabled": False,
+            "headless": True,
+        },
+    },
 }
