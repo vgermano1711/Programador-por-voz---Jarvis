@@ -4,7 +4,7 @@
 # ─── Ativação ──────────────────────────────────────────────────────────────────
 activation:
   mode: push_to_talk          # "push_to_talk" | "wake_word"
-  push_to_talk_key: "<cmd>+<tab>"  # Tecla de push-to-talk (quando mode=push_to_talk)
+  push_to_talk_key: "<cmd>+<alt>"  # Tecla de push-to-talk (quando mode=push_to_talk)
   wake_words:                 # Palavras de ativação (quando mode=wake_word)
     - claude
     - ei claude
