@@ -1,0 +1,33 @@
+# Audio capture
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Transcription
+faster-whisper>=1.0.0
+
+# Wake word (optional - uncomment one)
+# openwakeword>=0.6.0
+# pvporcupine>=3.0.0  # requires Picovoice account key
+
+# Text injection
+pyperclip>=1.8.2
+pyautogui>=0.9.54
+
+# Hotkey (push-to-talk)
+# keyboard requires root on Linux; pynput is the cross-platform alternative
+pynput>=1.7.6
+# keyboard>=0.13.5  # alternative, needs sudo on Linux
+
+# System tray
+pystray>=0.19.5
+Pillow>=10.0.0  # required by pystray for icons
+
+# Config
+PyYAML>=6.0.1
+
+# Testing
+pytest>=8.0.0
+pytest-mock>=3.12.0
+
+# Logging / utilities
+colorlog>=6.8.0

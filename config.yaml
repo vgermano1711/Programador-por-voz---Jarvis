@@ -1,0 +1,113 @@
+# Programador por Voz — Arquivo de Configuração Principal
+# Edite este arquivo para personalizar o comportamento do sistema.
+
+# ─── Ativação ──────────────────────────────────────────────────────────────────
+activation:
+  mode: push_to_talk          # "push_to_talk" | "wake_word"
+  push_to_talk_key: f9        # Tecla de push-to-talk (quando mode=push_to_talk)
+  wake_words:                 # Palavras de ativação (quando mode=wake_word)
+    - claude
+    - ei claude
+  wake_word_engine: openwakeword  # "openwakeword" | "porcupine"
+  porcupine_access_key: ""    # Necessário apenas para engine=porcupine
+
+# ─── Áudio ─────────────────────────────────────────────────────────────────────
+audio:
+  device_index: null          # null = dispositivo padrão; número = índice do microfone
+  device_name: null           # Alternativa: nome parcial do dispositivo (string)
+  sample_rate: 16000          # Taxa de amostragem (Hz) — Whisper usa 16000
+  channels: 1                 # Mono
+  chunk_duration_ms: 30       # Tamanho do chunk de áudio em ms (para VAD)
+  max_recording_seconds: 30   # Tempo máximo de uma gravação (segurança)
+
+# ─── Transcrição ───────────────────────────────────────────────────────────────
+transcription:
+  # Modelos disponíveis e trade-offs:
+  #   tiny    — ~39M params, <1s latência, precisão baixa. Bom para testes.
+  #   base    — ~74M params, ~1s latência, precisão razoável. Equilíbrio mínimo.
+  #   small   — ~244M params, ~2s latência, boa precisão. PADRÃO RECOMENDADO.
+  #   medium  — ~769M params, ~4s latência, precisão alta. Bom para jargão técnico.
+  #   large-v3 — ~1.5B params, ~8s latência, precisão máxima. Requer GPU/RAM.
+  model: small
+  device: cpu                 # "cpu" | "cuda" | "auto"
+  compute_type: int8          # "int8" (CPU) | "float16" (GPU) | "float32"
+  language: pt                # Idioma forçado. null = detecção automática
+  language_fallback: null     # Idioma de fallback se confiança < threshold
+  language_confidence_threshold: 0.7
+  beam_size: 5                # Qualidade do beam search (1=rápido, 5=preciso)
+  initial_prompt: "Código Python, terminal, programação em português."
+
+# ─── VAD (Voice Activity Detection) ───────────────────────────────────────────
+vad:
+  enabled: true
+  aggressiveness: 2           # 0=permissivo, 3=agressivo (filtra mais silêncio)
+  min_speech_duration_ms: 300 # Descarta áudios menores que isso
+  silence_threshold_ms: 500   # Silêncio após fala para encerrar gravação
+
+# ─── Comandos de Controle ──────────────────────────────────────────────────────
+control_commands:
+  # Cada entrada: palavra/frase que ativa o comando.
+  # Comparação é case-insensitive e ignora pontuação.
+  cancela:
+    - cancela
+    - cancelar
+    - cancela isso
+  interrompe:
+    - interrompe
+    - interromper
+    - ctrl c
+    - para tudo
+  repete:
+    - repete
+    - repetir
+    - repete isso
+    - repete o último
+  limpa_tela:
+    - limpa tela
+    - limpar tela
+    - limpa o terminal
+  para:
+    - para
+    - parar
+
+# ─── Injeção de Texto ──────────────────────────────────────────────────────────
+injection:
+  method: clipboard           # "clipboard" | "type" (clipboard é mais confiável)
+  auto_enter: true            # Pressionar Enter ao final do texto injetado
+  paste_delay_ms: 100         # Delay entre colar e pressionar Enter
+  valid_terminals:            # Nomes de janela considerados terminais válidos
+    - terminal
+    - konsole
+    - gnome-terminal
+    - xterm
+    - bash
+    - zsh
+    - fish
+    - cmd
+    - powershell
+    - windows terminal
+    - wt
+    - alacritty
+    - kitty
+    - iterm
+    - claude
+    - code
+
+# ─── Histórico ─────────────────────────────────────────────────────────────────
+history:
+  enabled: true
+  file: history.json
+  max_entries: 1000           # Rotaciona após N entradas
+
+# ─── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  level: INFO                 # DEBUG | INFO | WARNING | ERROR
+  file: programador_por_voz.log
+  max_file_size_mb: 10
+  backup_count: 3
+  console: true               # Também exibir no console
+
+# ─── Interface ─────────────────────────────────────────────────────────────────
+ui:
+  tray_enabled: true          # Ícone na bandeja do sistema
+  notifications: true         # Notificações do sistema operacional
