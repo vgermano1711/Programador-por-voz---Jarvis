@@ -150,31 +150,65 @@ class AudioCapture:
 
     # ── Push-to-talk ────────────────────────────────────────────────────────────
 
+    def _parse_key(self, kb, key_str: str):
+        """Converte string de tecla para objeto pynput Key ou KeyCode."""
+        key_str = key_str.strip().lower()
+        # Teclas especiais: cmd, alt, ctrl, shift, tab, f1-f12, etc.
+        special = {
+            "cmd": kb.Key.cmd, "win": kb.Key.cmd, "super": kb.Key.cmd,
+            "alt": kb.Key.alt, "alt_l": kb.Key.alt, "alt_r": kb.Key.alt_r,
+            "ctrl": kb.Key.ctrl, "shift": kb.Key.shift,
+            "tab": kb.Key.tab, "space": kb.Key.space,
+            "esc": kb.Key.esc, "enter": kb.Key.enter,
+        }
+        for i in range(1, 13):
+            special[f"f{i}"] = getattr(kb.Key, f"f{i}")
+        if key_str in special:
+            return special[key_str]
+        return kb.KeyCode.from_char(key_str)
+
     def _start_hotkey_listener(self) -> None:
         """
         Usa pynput para capturar hotkey globalmente.
+        Suporta teclas simples (f9) e combinações (win+alt, ctrl+shift+r).
         pynput funciona sem root no Linux (via XInput/Wayland) ao contrário
         de `keyboard`, que precisa de /dev/input e root em muitas distros.
         """
         try:
             from pynput import keyboard as kb
 
-            key_name = self._ptk_key.upper()
+            raw = self._ptk_key.strip().strip('"').strip("'")
+            parts = [p.strip() for p in raw.split("+")]
 
-            # Tenta mapear "F9" → Key.f9, etc.
-            try:
-                target_key = getattr(kb.Key, key_name.lower())
-            except AttributeError:
-                # Tecla de caractere comum (ex: "a")
-                target_key = kb.KeyCode.from_char(key_name.lower())
+            if len(parts) == 1:
+                # Tecla simples
+                target_key = self._parse_key(kb, parts[0])
+                pressed_keys: set = set()
 
-            def on_press(key):
-                if key == target_key:
-                    self._start_recording()
+                def on_press(key):
+                    if key == target_key:
+                        self._start_recording()
 
-            def on_release(key):
-                if key == target_key:
-                    self._stop_recording()
+                def on_release(key):
+                    if key == target_key:
+                        self._stop_recording()
+            else:
+                # Combinação de teclas: todas devem estar pressionadas
+                combo = set(self._parse_key(kb, p) for p in parts)
+                pressed_keys: set = set()
+                _combo_active = [False]
+
+                def on_press(key):
+                    pressed_keys.add(key)
+                    if combo.issubset(pressed_keys) and not _combo_active[0]:
+                        _combo_active[0] = True
+                        self._start_recording()
+
+                def on_release(key):
+                    pressed_keys.discard(key)
+                    if _combo_active[0] and not combo.issubset(pressed_keys):
+                        _combo_active[0] = False
+                        self._stop_recording()
 
             self._hotkey_listener = kb.Listener(
                 on_press=on_press, on_release=on_release
