@@ -157,7 +157,8 @@ class AudioCapture:
         special = {
             "cmd": kb.Key.cmd, "win": kb.Key.cmd, "super": kb.Key.cmd,
             "alt": kb.Key.alt, "alt_l": kb.Key.alt, "alt_r": kb.Key.alt_r,
-            "ctrl": kb.Key.ctrl, "shift": kb.Key.shift,
+            "ctrl": kb.Key.ctrl, "ctrl_l": kb.Key.ctrl_l, "ctrl_r": kb.Key.ctrl_r,
+            "shift": kb.Key.shift,
             "tab": kb.Key.tab, "space": kb.Key.space,
             "esc": kb.Key.esc, "enter": kb.Key.enter,
         }
@@ -181,16 +182,20 @@ class AudioCapture:
             parts = [p.strip() for p in raw.split("+")]
 
             if len(parts) == 1:
-                # Tecla simples
+                # Tecla simples — para modificadores (alt, ctrl, shift) aceita l/r
                 target_key = self._parse_key(kb, parts[0])
-                pressed_keys: set = set()
+                alt_keys = {kb.Key.alt, kb.Key.alt_l, kb.Key.alt_r}
+                ctrl_keys = {kb.Key.ctrl, kb.Key.ctrl_l, kb.Key.ctrl_r}
+                shift_keys = {kb.Key.shift, kb.Key.shift_l, kb.Key.shift_r}
+                modifier_groups = [alt_keys, ctrl_keys, shift_keys]
+                target_group = next((g for g in modifier_groups if target_key in g), {target_key})
 
                 def on_press(key):
-                    if key == target_key:
+                    if key in target_group:
                         self._start_recording()
 
                 def on_release(key):
-                    if key == target_key:
+                    if key in target_group:
                         self._stop_recording()
             else:
                 # Combinação de teclas: todas devem estar pressionadas
