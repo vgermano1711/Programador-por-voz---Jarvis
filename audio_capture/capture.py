@@ -57,6 +57,17 @@ class AudioCapture:
         self._hotkey_listener = None
         self._lock = threading.Lock()
 
+        # VAD auto-stop (para modo wake_word)
+        self._vad_silence_s: float = cfg.get("vad", "silence_seconds_to_stop", default=1.5)
+        self._vad_rms_threshold: float = cfg.get("vad", "rms_threshold", default=0.015)
+        self._vad_min_speech_s: float = cfg.get("vad", "min_speech_seconds", default=0.3)
+        self._auto_stop_on_silence: bool = (self._mode == "wake_word")
+        # Estado de VAD por gravação (reset em _start_recording)
+        self._last_speech_time: float = 0.0
+        self._has_speech: bool = False
+        self._auto_stopping: bool = False
+        self._recording_start_time: float = 0.0
+
         # Status callback para atualizar a bandeja (injetado externamente)
         self.on_status_change: Optional[Callable[[str], None]] = None
 
@@ -111,6 +122,24 @@ class AudioCapture:
                 if total_seconds >= self._max_seconds:
                     logger.warning("Gravação interrompida: limite de %ds atingido", self._max_seconds)
                     self._flush_recording()
+                    return
+
+            # VAD auto-stop: detecta silêncio após fala no modo wake_word
+            if self._auto_stop_on_silence and not self._auto_stopping:
+                rms = float(np.sqrt(np.mean(indata ** 2)))
+                now = time.monotonic()
+                elapsed_recording = now - self._recording_start_time
+                if rms > self._vad_rms_threshold:
+                    self._last_speech_time = now
+                    self._has_speech = True
+                elif (
+                    self._has_speech
+                    and elapsed_recording >= self._vad_min_speech_s
+                    and (now - self._last_speech_time) >= self._vad_silence_s
+                ):
+                    logger.debug("VAD: silêncio detectado após %.1fs de fala.", elapsed_recording)
+                    self._auto_stopping = True
+                    threading.Thread(target=self._stop_recording, daemon=True, name="vad-stop").start()
 
     # ── Gravação ────────────────────────────────────────────────────────────────
 
@@ -120,6 +149,12 @@ class AudioCapture:
                 return
             self._recording = True
             self._buffer = []
+        # Reseta estado VAD para essa gravação
+        now = time.monotonic()
+        self._recording_start_time = now
+        self._last_speech_time = now
+        self._has_speech = False
+        self._auto_stopping = False
         self._set_status("recording")
         logger.debug("Gravação iniciada.")
 

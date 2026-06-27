@@ -32,6 +32,8 @@ class AudioPlayer:
         self._sample_rate = sample_rate
         self._channels = channels
         self._stop_event = threading.Event()
+        self._done_event = threading.Event()
+        self._done_event.set()  # começa "done" (nada tocando)
         self._play_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -44,6 +46,7 @@ class AudioPlayer:
 
         rate = sample_rate or self._sample_rate
         self._stop_event.clear()
+        self._done_event.clear()
 
         self._play_thread = threading.Thread(
             target=self._play_wav,
@@ -58,6 +61,11 @@ class AudioPlayer:
         self._stop_event.set()
         if self._play_thread and self._play_thread.is_alive():
             self._play_thread.join(timeout=0.5)
+        self._done_event.set()
+
+    def wait(self, timeout: Optional[float] = None) -> None:
+        """Bloqueia até o áudio atual terminar (ou timeout em segundos)."""
+        self._done_event.wait(timeout=timeout)
 
     def is_playing(self) -> bool:
         return self._play_thread is not None and self._play_thread.is_alive()
@@ -91,6 +99,8 @@ class AudioPlayer:
 
         except Exception as exc:
             logger.error("Erro na reprodução de áudio: %s", exc)
+        finally:
+            self._done_event.set()
 
     def _decode_audio(self, audio_bytes: bytes) -> Optional[np.ndarray]:
         """Decodifica WAV bytes para numpy float32."""

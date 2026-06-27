@@ -39,14 +39,16 @@ DECISÃO FINAL: subprocess para TTS + terminal interativo para visualização.
 
 import subprocess
 import threading
-from typing import Callable, Optional
+import time
+from typing import Callable, Iterator, Optional
 
 from logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-# Callback: recebe a resposta completa como string
+# Callbacks
 ResponseCallback = Callable[[str], None]
+ChunkCallback = Callable[[str], None]
 
 
 class ClaudeCapture:
@@ -65,6 +67,86 @@ class ClaudeCapture:
 
         # Histórico local de pares (user, assistant) para simular contexto
         self._history: list[dict] = []
+
+    def send_streaming(
+        self,
+        user_message: str,
+        on_chunk: ChunkCallback,
+    ) -> Optional[str]:
+        """
+        Envia mensagem e chama on_chunk com cada linha conforme chega do processo.
+        Retorna a resposta completa quando terminar.
+        Ideal para alimentar o StreamingTTSPipeline linha a linha.
+        """
+        args = self._build_args(user_message)
+        logger.debug("Chamando Claude (streaming): %s ...", " ".join(args[:3]))
+
+        full_response: list[str] = []
+        t_start = time.monotonic()
+
+        try:
+            process = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,  # line-buffered
+            )
+
+            first_chunk = True
+            for line in process.stdout:
+                if first_chunk:
+                    logger.debug("Claude primeiro chunk em %.2fs", time.monotonic() - t_start)
+                    first_chunk = False
+                full_response.append(line)
+                try:
+                    on_chunk(line)
+                except Exception as exc:
+                    logger.error("Erro em on_chunk: %s", exc)
+
+            process.wait(timeout=self._timeout)
+
+            if process.returncode != 0:
+                stderr = process.stderr.read().strip()
+                logger.error("claude retornou %d: %s", process.returncode, stderr)
+                return None
+
+            response = "".join(full_response).strip()
+            if response:
+                self._add_to_history(user_message, response)
+            logger.debug("Claude resposta completa em %.2fs", time.monotonic() - t_start)
+            return response or None
+
+        except subprocess.TimeoutExpired:
+            process.kill()
+            logger.error("Claude não respondeu em %ds.", self._timeout)
+            return None
+        except FileNotFoundError:
+            logger.error("Binário '%s' não encontrado.", self._claude_bin)
+            return None
+        except Exception as exc:
+            logger.error("Erro ao chamar Claude Code: %s", exc)
+            return None
+
+    def send_streaming_async(
+        self,
+        user_message: str,
+        on_chunk: ChunkCallback,
+        on_done: Optional[ResponseCallback] = None,
+    ) -> threading.Thread:
+        """Versão não-bloqueante de send_streaming. Dispara on_done ao terminar."""
+        def worker():
+            response = self.send_streaming(user_message, on_chunk)
+            if on_done and response:
+                try:
+                    on_done(response)
+                except Exception as exc:
+                    logger.error("Erro em on_done: %s", exc)
+
+        thread = threading.Thread(target=worker, daemon=True, name="claude-stream")
+        thread.start()
+        return thread
 
     def send_async(self, user_message: str, on_response: ResponseCallback) -> threading.Thread:
         """

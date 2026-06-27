@@ -30,6 +30,7 @@ para a justificativa da abordagem escolhida (subprocess vs pty).
 """
 
 import argparse
+import queue
 import signal
 import sys
 import threading
@@ -54,6 +55,7 @@ from response_capture import ClaudeCapture
 from response_humanizer import Humanizer
 from tts import create_tts_engine
 from tts.player import AudioPlayer
+from tts.streaming_pipeline import StreamingTTSPipeline
 from mcp_servers import MCPManager
 
 logger = get_logger(__name__)
@@ -84,6 +86,7 @@ class VoiceProgrammer:
 
         # ── TTS e player ────────────────────────────────────────────────────────
         self._tts_enabled: bool = self._cfg.get("tts", "enabled", default=True)
+        self._tts_streaming: bool = self._cfg.get("tts", "streaming", default=True)
         self._tts_engine = None
         self._audio_player = AudioPlayer(
             sample_rate=self._cfg.get("tts", "sample_rate", default=22050)
@@ -91,8 +94,9 @@ class VoiceProgrammer:
         self._humanizer = Humanizer(self._cfg)
         self._stop_speaking_phrases: list[str] = self._cfg.get(
             "tts", "stop_speaking_phrases",
-            default=["para de falar", "cala a boca", "silencia"]
+            default=["para de falar", "cala a boca", "silencia", "espera", "chega"]
         )
+        self._streaming_pipeline: Optional[StreamingTTSPipeline] = None
 
         # ── Captura de resposta do Claude ───────────────────────────────────────
         self._claude_capture_enabled: bool = self._cfg.get(
@@ -172,6 +176,7 @@ class VoiceProgrammer:
             return
 
         self._tray.set_status("processing")
+        t_audio_end = time.monotonic()
 
         # 1. Transcrição
         try:
@@ -182,6 +187,9 @@ class VoiceProgrammer:
             time.sleep(1)
             self._tray.set_status("idle")
             return
+
+        t_transcribed = time.monotonic()
+        logger.info("[LATÊNCIA] Transcrição: %.2fs", t_transcribed - t_audio_end)
 
         if result is None:
             logger.info("Transcrição vazia (silêncio ou VAD).")
@@ -199,6 +207,8 @@ class VoiceProgrammer:
         # 2. Verifica "para de falar" antes de tudo
         if self._is_stop_speaking(text):
             self._audio_player.stop()
+            if self._streaming_pipeline:
+                self._streaming_pipeline.stop()
             logger.info("Reprodução de áudio interrompida por comando de voz.")
             self._tray.set_status("idle")
             return
@@ -262,10 +272,75 @@ class VoiceProgrammer:
 
         # 2. Captura resposta do Claude e converte em TTS (em background)
         if self._claude_capture_enabled and self._claude and self._tts_enabled:
-            self._claude.send_async(
-                user_message=text,
-                on_response=self._on_claude_response,
+            if self._tts_streaming and self._tts_engine and self._tts_engine.is_available():
+                self._handle_claude_streaming(text)
+            else:
+                self._claude.send_async(
+                    user_message=text,
+                    on_response=self._on_claude_response,
+                )
+
+    def _handle_claude_streaming(self, user_text: str) -> None:
+        """
+        Pipeline de streaming: Claude → frases → TTS → áudio.
+        Inicia em thread separada para não bloquear o loop principal.
+        """
+        t_start = time.monotonic()
+        chunk_queue: queue.Queue = queue.Queue()
+        first_chunk_logged = [False]
+
+        def on_chunk(chunk: str) -> None:
+            if not first_chunk_logged[0]:
+                first_chunk_logged[0] = True
+                logger.info("[LATÊNCIA] Claude primeiro chunk: %.2fs", time.monotonic() - t_start)
+            chunk_queue.put(chunk)
+
+        def on_done(response: str) -> None:
+            logger.info("[LATÊNCIA] Claude resposta completa: %.2fs", time.monotonic() - t_start)
+            self._audit.log_claude_response(
+                response_text=response,
+                inference_ms=int((time.monotonic() - t_start) * 1000),
+                was_truncated=False,
             )
+
+        def run_pipeline() -> None:
+            # Inicia Claude em thread separada enquanto o pipeline consome a fila
+            claude_thread = self._claude.send_streaming_async(user_text, on_chunk, on_done)
+
+            def text_iterator():
+                while True:
+                    try:
+                        chunk = chunk_queue.get(timeout=self._cfg.get(
+                            "claude_capture", "timeout_seconds", default=60
+                        ))
+                        if chunk is None:
+                            break
+                        yield chunk
+                    except queue.Empty:
+                        break
+
+            pipeline = StreamingTTSPipeline(self._tts_engine, self._audio_player)
+            self._streaming_pipeline = pipeline
+
+            t_tts_start = [None]
+
+            def on_sentence(sentence: str) -> None:
+                if t_tts_start[0] is None:
+                    t_tts_start[0] = time.monotonic()
+                    logger.info("[LATÊNCIA] Primeira frase para TTS: %.2fs", t_tts_start[0] - t_start)
+                print(f"  [Jarvis] {sentence}")
+
+            pipeline.stream(text_iterator(), on_sentence=on_sentence)
+            claude_thread.join(timeout=2)
+
+            if t_tts_start[0]:
+                logger.info("[LATÊNCIA] Pipeline total (fala→áudio): %.2fs", time.monotonic() - t_start)
+
+            self._streaming_pipeline = None
+            # Sinaliza fim para o iterador
+            chunk_queue.put(None)
+
+        threading.Thread(target=run_pipeline, daemon=True, name="jarvis-pipeline").start()
 
     def _on_claude_response(self, response: str) -> None:
         """Callback quando ClaudeCapture recebe resposta do Claude Code."""
@@ -342,7 +417,14 @@ class VoiceProgrammer:
                 logger.warning("TTS não carregado: %s — sistema continua sem voz de saída.", exc)
 
         if self._transcriber:
-            print("\n  Sistema pronto! Pressione F9 e fale.\n")
+            mode = self._cfg.get("activation", "mode", default="wake_word")
+            if mode == "wake_word":
+                words = self._cfg.get("activation", "wake_words", default=["jarvis"])
+                wake_str = " / ".join(f'"{w}"' for w in words)
+                print(f"\n  Sistema pronto! Diga {wake_str} para ativar.\n")
+            else:
+                key = self._cfg.get("activation", "push_to_talk_key", default="alt")
+                print(f"\n  Sistema pronto! Segure {key.upper()} e fale.\n")
 
     def _start_mcp(self) -> None:
         """Inicia servidores MCP. Executado em thread separada."""
@@ -361,16 +443,24 @@ class VoiceProgrammer:
         tts_engine = self._cfg.get("tts", "engine", default="coqui")
         capture = "sim" if self._claude_capture_enabled else "não"
 
+        streaming_label = "sim (frase a frase)" if self._tts_streaming else "não"
+        activation_label = (
+            f"wake word ({', '.join(self._cfg.get('activation', 'wake_words', default=['jarvis']))})"
+            if mode == "wake_word"
+            else f"push-to-talk ({key.upper()})"
+        )
         print(f"\n{'='*62}")
-        print("  Programador por Voz — Pipeline Bidirecional")
+        print("  J A R V I S  —  Assistente de Voz")
         print(f"{'='*62}")
-        print(f"  Modo entrada:  {mode} ({key.upper() if mode == 'push_to_talk' else 'wake word'})")
+        print(f"  Ativação:      {activation_label}")
         print(f"  STT:           Whisper {model}")
         print(f"  TTS:           {tts_engine} {'(habilitado)' if self._tts_enabled else '(desabilitado)'}")
+        print(f"  Streaming TTS: {streaming_label}")
         print(f"  Resposta voz:  {capture}")
+        print(f"  Latência alvo: ~1-2s (fala → primeiro áudio de resposta)")
         print(f"  Audit log:     {self._cfg.get('audit', 'file', default='audit_log.jsonl')}")
         print(f"{'='*62}")
-        print("  Ctrl+C para sair | 'para de falar' para silenciar TTS")
+        print("  Ctrl+C para sair | 'para de falar' ou 'espera' para silenciar")
         print()
 
     def _signal_handler(self, signum, frame) -> None:

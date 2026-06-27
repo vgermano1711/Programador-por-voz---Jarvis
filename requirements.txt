@@ -5,22 +5,27 @@ numpy>=1.24.0
 # Transcription
 faster-whisper>=1.0.0
 
-# Wake word (optional - uncomment one)
-# openwakeword>=0.6.0
-# pvporcupine>=3.0.0  # requires Picovoice account key
+# Wake word (openwakeword é o padrão — Jarvis usa wake_word mode)
+openwakeword>=0.6.0
+# pvporcupine>=3.0.0  # alternativa de alta precisão, requer access key Picovoice
+
+# TTS — edge-tts (padrão): Microsoft Edge, gratuito, ~300ms latência
+edge-tts>=6.1.9
+miniaudio>=1.58       # decodifica MP3→WAV sem depender de ffmpeg
+
+# TTS — Coqui (fallback offline, opcional)
+# TTS>=0.22.0         # descomente se quiser voz offline
 
 # Text injection
 pyperclip>=1.8.2
 pyautogui>=0.9.54
 
-# Hotkey (push-to-talk)
-# keyboard requires root on Linux; pynput is the cross-platform alternative
+# Hotkey (push-to-talk fallback)
 pynput>=1.7.6
-# keyboard>=0.13.5  # alternative, needs sudo on Linux
 
 # System tray
 pystray>=0.19.5
-Pillow>=10.0.0  # required by pystray for icons
+Pillow>=10.0.0
 
 # Config
 PyYAML>=6.0.1
