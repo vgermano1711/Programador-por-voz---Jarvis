@@ -48,6 +48,7 @@ from command_interpreter.control_commands import ControlCommand, CommandType
 from text_injector import TextInjector
 from history import HistoryManager
 from tray import TrayApp
+from tray.overlay import RecordingOverlay
 from audit import AuditLogger
 from response_capture import ClaudeCapture
 from response_humanizer import Humanizer
@@ -79,6 +80,7 @@ class VoiceProgrammer:
         self._injector = TextInjector(self._cfg)
         self._interpreter = CommandInterpreter(self._cfg)
         self._tray = TrayApp(self._cfg, on_quit=self._shutdown)
+        self._overlay = RecordingOverlay()
 
         # ── TTS e player ────────────────────────────────────────────────────────
         self._tts_enabled: bool = self._cfg.get("tts", "enabled", default=True)
@@ -103,7 +105,11 @@ class VoiceProgrammer:
 
         # ── Captura de áudio (último — depende de callbacks acima) ─────────────
         self._capture = AudioCapture(self._cfg, on_audio=self._on_audio)
-        self._capture.on_status_change = self._tray.set_status
+        def _on_status(status: str):
+            self._tray.set_status(status)
+            self._overlay.set_status(status)
+
+        self._capture.on_status_change = _on_status
 
         self._running = False
         self._transcriber: Optional[Transcriber] = None
@@ -126,6 +132,7 @@ class VoiceProgrammer:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
         self._tray.start()
+        self._overlay.start()
         self._tray.set_status("idle")
 
         # Inicia servidores MCP em background (falha não bloqueia o sistema)
