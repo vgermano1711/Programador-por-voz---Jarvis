@@ -99,16 +99,17 @@ class VoiceProgrammer:
         self._last_emotion: Optional[dict] = None
 
         # ── Integrações externas ────────────────────────────────────────────────
-        self._spotify = SpotifyIntegration(self._cfg)
-        self._github = GitHubIntegration(self._cfg)
-        self._google = GoogleIntegration(self._cfg)
-        self._vscode = VSCodeContext(self._cfg)
+        self._spotify = SpotifyIntegration()
+        self._github = GitHubIntegration()
+        self._google = GoogleIntegration()
+        self._vscode = VSCodeContext()
 
         # ── Monitor proativo ────────────────────────────────────────────────────
-        self._proactive = ProactiveMonitor(self._cfg)
+        log_file = (self._cfg.get("logging", "file") or "programador_por_voz.log")
+        self._proactive = ProactiveMonitor(log_file=log_file)
 
         # ── Dashboard web ───────────────────────────────────────────────────────
-        self._dashboard = DashboardServer(self._cfg)
+        self._dashboard = DashboardServer()
 
         # ── TTS e player ────────────────────────────────────────────────────────
         self._tts_enabled: bool = self._cfg.get("tts", "enabled", default=True)
