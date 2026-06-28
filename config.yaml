@@ -177,7 +177,18 @@ mcp:
     enabled: false
     headless: true                # false = abre janela visível do browser
 
+# ─── Memória Persistente ───────────────────────────────────────────────────────
+memory:
+  enabled: true
+  db_file: jarvis_memory.db
+  inject_in_context: true       # Injeta memórias relevantes no system prompt
+  max_context_memories: 5       # Máximo de memórias injetadas por query
 
-
-
+# ─── Roteamento de Modelos ────────────────────────────────────────────────────
+model_routing:
+  enabled: true
+  haiku_model: "claude-haiku-4-5-20251001"
+  sonnet_model: "claude-sonnet-4-6"
+  opus_model: "claude-opus-4-8"
+  log_routing_decisions: true
 

@@ -1,26 +1,23 @@
 # Audio capture
 sounddevice>=0.4.6
 numpy>=1.24.0
+scipy>=1.11.0
 
 # Transcription
 faster-whisper>=1.0.0
 
-# Wake word (openwakeword é o padrão — Jarvis usa wake_word mode)
+# Wake word
 openwakeword>=0.6.0
-# pvporcupine>=3.0.0  # alternativa de alta precisão, requer access key Picovoice
 
-# TTS — edge-tts (padrão): Microsoft Edge, gratuito, ~300ms latência
+# TTS — edge-tts
 edge-tts>=6.1.9
-miniaudio>=1.58       # decodifica MP3→WAV sem depender de ffmpeg
-
-# TTS — Coqui (fallback offline, opcional)
-# TTS>=0.22.0         # descomente se quiser voz offline
+miniaudio>=1.58
 
 # Text injection
 pyperclip>=1.8.2
 pyautogui>=0.9.54
 
-# Hotkey (push-to-talk fallback)
+# Hotkey
 pynput>=1.7.6
 
 # System tray
@@ -30,12 +27,32 @@ Pillow>=10.0.0
 # Config
 PyYAML>=6.0.1
 
-# Claude / Anthropic API (backend principal do Jarvis)
+# Claude / Anthropic API
 anthropic>=0.40.0
+
+# Dashboard web
+flask>=3.0.0
+
+# Spotify
+spotipy>=2.23.0
+
+# GitHub
+PyGithub>=2.1.1
+
+# Google Calendar + Gmail
+google-auth>=2.28.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.120.0
+
+# System info (proactive monitor, vscode context)
+psutil>=5.9.0
+
+# Credentials
+keyring>=24.3.0
 
 # Testing
 pytest>=8.0.0
 pytest-mock>=3.12.0
 
-# Logging / utilities
+# Logging
 colorlog>=6.8.0

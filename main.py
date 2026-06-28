@@ -1,32 +1,24 @@
 #!/usr/bin/env python3
 """
-Programador por Voz — Pipeline Bidirecional de Voz ↔ Claude Code
+J.A.R.V.I.S — Assistente Pessoal de Voz de Victor Germano
 
-Fluxo completo:
-  [Microfone]
-     ↓ (push-to-talk / wake word)
-  AudioCapture
-     ↓ numpy float32
-  Transcriber (faster-whisper)
-     ↓ texto transcrito
-  CommandInterpreter
-     ├── Comando de controle → executa localmente (cancela, interrompe, repete)
-     │                         detectar "para de falar" → AudioPlayer.stop()
-     └── Ditado literal ──────┬── TextInjector → clipboard → terminal ativo
-                              └── ClaudeCapture → `claude --print` → resposta
-                                                       ↓
-                                                  Humanizer
-                                                       ↓ texto para fala
-                                                  TTSEngine → bytes WAV
-                                                       ↓
-                                                  AudioPlayer → fala
-                                                       ↓
-                                                  AuditLogger
+Pipeline completo:
+  [Microfone] → AudioCapture → EmotionDetector → Transcriber
+      → CommandInterpreter
+          ├── Controle local (cancela, interrompe, repete)
+          ├── Integrações (Spotify, GitHub, Google, VS Code)
+          └── Ditado → ModelRouter → Claude (Haiku/Sonnet/Opus)
+                           → Humanizer → TTS → AudioPlayer
+                           → PersistentMemory → AuditLogger
 
-O terminal interativo onde o Claude Code roda continua funcionando normalmente.
-O sistema de voz injeta via clipboard E paralelamente chama claude --print para
-capturar a resposta e converter em TTS. Veja response_capture/claude_subprocess.py
-para a justificativa da abordagem escolhida (subprocess vs pty).
+Módulos ativos:
+  - Memória persistente entre sessões (SQLite)
+  - Roteamento automático de modelos por complexidade
+  - Contexto do VS Code (arquivo aberto)
+  - Spotify, GitHub, Google Calendar/Gmail por voz
+  - Monitor proativo de erros no terminal
+  - Dashboard web em localhost:7432
+  - Detecção de emoção no tom de voz
 """
 
 import argparse
@@ -60,23 +52,26 @@ from tts.player import AudioPlayer
 from tts.streaming_pipeline import StreamingTTSPipeline
 from mcp_servers import MCPManager
 
+# ── Novos módulos ───────────────────────────────────────────────────────────────
+from memory.persistent import PersistentMemory
+from model_router.router import ModelRouter
+from emotion.detector import EmotionDetector
+from proactive.monitor import ProactiveMonitor
+from dashboard.app import DashboardServer
+from integrations.spotify_integration import SpotifyIntegration
+from integrations.github_integration import GitHubIntegration
+from integrations.google_integration import GoogleIntegration
+from integrations.vscode_context import VSCodeContext
+
 logger = get_logger(__name__)
 
 
 class VoiceProgrammer:
-    """
-    Orquestra o sistema completo de programação por voz com resposta em áudio.
-
-    Uso básico:
-        app = VoiceProgrammer()
-        app.run()
-    """
-
     def __init__(self, config_path: Optional[str] = None) -> None:
         self._cfg = load_config(config_path)
         self._setup_logging()
 
-        logger.info("Inicializando Programador por Voz (pipeline bidirecional)...")
+        logger.info("Inicializando J.A.R.V.I.S...")
 
         # ── Módulos base ────────────────────────────────────────────────────────
         self._history = HistoryManager(self._cfg)
@@ -85,6 +80,35 @@ class VoiceProgrammer:
         self._interpreter = CommandInterpreter(self._cfg)
         self._tray = TrayApp(self._cfg, on_quit=self._shutdown)
         self._overlay = RecordingOverlay()
+
+        # ── Memória persistente ─────────────────────────────────────────────────
+        if self._cfg.get("memory", "enabled", default=True):
+            db = self._cfg.get("memory", "db_file", default="jarvis_memory.db")
+            self._memory = PersistentMemory(db)
+            logger.info("Memória persistente ativa: %s", db)
+        else:
+            self._memory = None
+
+        # ── Roteamento de modelos ───────────────────────────────────────────────
+        self._model_router = ModelRouter(self._cfg) if self._cfg.get(
+            "model_routing", "enabled", default=True
+        ) else None
+
+        # ── Detecção de emoção ──────────────────────────────────────────────────
+        self._emotion_detector = EmotionDetector()
+        self._last_emotion: Optional[dict] = None
+
+        # ── Integrações externas ────────────────────────────────────────────────
+        self._spotify = SpotifyIntegration(self._cfg)
+        self._github = GitHubIntegration(self._cfg)
+        self._google = GoogleIntegration(self._cfg)
+        self._vscode = VSCodeContext(self._cfg)
+
+        # ── Monitor proativo ────────────────────────────────────────────────────
+        self._proactive = ProactiveMonitor(self._cfg)
+
+        # ── Dashboard web ───────────────────────────────────────────────────────
+        self._dashboard = DashboardServer(self._cfg)
 
         # ── TTS e player ────────────────────────────────────────────────────────
         self._tts_enabled: bool = self._cfg.get("tts", "enabled", default=True)
@@ -104,7 +128,6 @@ class VoiceProgrammer:
         self._claude_capture_enabled: bool = self._cfg.get(
             "claude_capture", "enabled", default=True
         )
-        # Usa API Anthropic direta se disponível; fallback para subprocess CLI
         if self._claude_capture_enabled:
             if os.environ.get("ANTHROPIC_API_KEY"):
                 self._claude = AnthropicClient(self._cfg)
@@ -118,23 +141,23 @@ class VoiceProgrammer:
         # ── MCP ─────────────────────────────────────────────────────────────────
         self._mcp = MCPManager(self._cfg)
 
-        # Transcriber iniciado em None — carregado em _load_models (thread separada)
         self._transcriber: Optional[Transcriber] = None
 
-        # ── Captura de áudio (último — depende de callbacks acima) ─────────────
+        # ── Captura de áudio ────────────────────────────────────────────────────
         self._capture = AudioCapture(self._cfg, on_audio=self._on_audio)
+
         def _on_status(status: str):
             self._tray.set_status(status)
             self._overlay.set_status(status)
+            self._dashboard.update_status(status)
 
         self._capture.on_status_change = _on_status
-
         self._running = False
 
     def _update_status(self, status: str) -> None:
-        """Atualiza bandeja E overlay — sempre use isso, nunca self._tray.set_status direto."""
         self._tray.set_status(status)
         self._overlay.set_status(status)
+        self._dashboard.update_status(status)
 
     def _setup_logging(self) -> None:
         log_cfg = self._cfg.get("logging") or {}
@@ -155,9 +178,16 @@ class VoiceProgrammer:
 
         self._tray.start()
         self._overlay.start()
-        self._tray.set_status("idle")
+        self._update_status("idle")
 
-        # Inicia servidores MCP em background (falha não bloqueia o sistema)
+        # Dashboard web
+        dashboard_port = self._cfg.get("ui", "dashboard_port", default=7432)
+        self._dashboard.start(port=dashboard_port)
+
+        # Monitor proativo de erros
+        self._proactive.start(on_alert=self._on_proactive_alert)
+
+        # MCP em background
         mcp_thread = threading.Thread(target=self._start_mcp, daemon=True, name="mcp-init")
         mcp_thread.start()
 
@@ -165,12 +195,10 @@ class VoiceProgrammer:
             self._capture.start()
         except Exception as exc:
             logger.error("Falha ao iniciar captura de áudio: %s", exc)
-            _print_startup_help()
             sys.exit(1)
 
         self._print_banner()
 
-        # Carrega modelos pesados em thread separada para não travar o startup
         init_thread = threading.Thread(
             target=self._load_models, daemon=True, name="model-init"
         )
@@ -184,19 +212,24 @@ class VoiceProgrammer:
     # ── Pipeline de áudio ───────────────────────────────────────────────────────
 
     def _on_audio(self, audio: np.ndarray, sample_rate: int) -> None:
-        """
-        Callback chamado quando uma gravação é concluída.
-        Executa o pipeline completo de forma thread-safe.
-        """
         if self._transcriber is None:
-            logger.warning("Modelos ainda carregando... tente novamente em instantes.")
+            logger.warning("Modelos ainda carregando...")
             self._update_status("idle")
             return
 
         self._update_status("processing")
         t_audio_end = time.monotonic()
 
-        # 1. Transcrição
+        # Detecção de emoção (não bloqueia o pipeline)
+        try:
+            self._last_emotion = self._emotion_detector.detect(audio, sample_rate)
+            if self._last_emotion["state"] != "calm":
+                logger.info("[EMOÇÃO] %s (%.0f%%)", self._last_emotion["state"],
+                            self._last_emotion["confidence"] * 100)
+        except Exception:
+            self._last_emotion = None
+
+        # Transcrição
         try:
             result = self._transcriber.transcribe(audio, sample_rate)
         except Exception as exc:
@@ -206,11 +239,9 @@ class VoiceProgrammer:
             self._update_status("idle")
             return
 
-        t_transcribed = time.monotonic()
-        logger.info("[LATÊNCIA] Transcrição: %.2fs", t_transcribed - t_audio_end)
+        logger.info("[LATÊNCIA] Transcrição: %.2fs", time.monotonic() - t_audio_end)
 
         if result is None:
-            logger.info("Transcrição vazia (silêncio ou VAD).")
             self._update_status("idle")
             return
 
@@ -222,18 +253,33 @@ class VoiceProgrammer:
         )
         logger.info("[VOZ] %r", text)
 
-        # 2. Verifica "para de falar" antes de tudo
+        # Salva na memória da sessão
+        if self._memory:
+            self._memory.save_conversation_turn(
+                session_id=self._audit._session_id,
+                role="user",
+                content=text,
+            )
+
+        # Comando para parar o áudio
         if self._is_stop_speaking(text):
             self._audio_player.stop()
             if self._streaming_pipeline:
                 self._streaming_pipeline.stop()
-            logger.info("Reprodução de áudio interrompida por comando de voz.")
             self._update_status("idle")
             return
 
-        # 3. Interpreta comando
-        interpreted = self._interpreter.interpret(text)
+        # Verifica integrações antes do Claude
+        integration_response = self._try_integrations(text)
+        if integration_response:
+            print(f"  [Jarvis] {integration_response}")
+            if self._tts_enabled and self._tts_engine:
+                self._speak(integration_response)
+            self._update_status("idle")
+            return
 
+        # Interpreta comando
+        interpreted = self._interpreter.interpret(text)
         if isinstance(interpreted, ControlCommand):
             self._handle_control(interpreted, text, result)
         else:
@@ -241,54 +287,61 @@ class VoiceProgrammer:
 
         self._update_status("idle")
 
-    def _handle_control(
-        self, command: ControlCommand, raw_text: str, result
-    ) -> None:
-        """Executa um comando de controle localmente (sem passar pelo Claude)."""
+    def _try_integrations(self, text: str) -> Optional[str]:
+        """Tenta roteamento para Spotify, GitHub ou Google antes de ir ao Claude."""
+        text_lower = text.lower()
+
+        # Spotify
+        spotify_triggers = ["toca ", "pausa", "parar música", "próxima", "pula ",
+                            "anterior", "volta música", "volume ", "que música", "o que está tocando"]
+        if any(t in text_lower for t in spotify_triggers) and self._spotify.is_available():
+            return self._spotify.handle_voice_command(text)
+
+        # GitHub
+        github_triggers = ["pull request", "issue", "commits", "repositório",
+                           "status do projeto", "cria issue", "pr aberta"]
+        if any(t in text_lower for t in github_triggers) and self._github.is_available():
+            return self._github.handle_voice_command(text)
+
+        # Google Calendar / Gmail
+        google_triggers = ["agenda", "compromisso", "reunião", "email",
+                           "caixa de entrada", "emails não lidos", "próximo evento"]
+        if any(t in text_lower for t in google_triggers) and self._google.is_available():
+            return self._google.handle_voice_command(text)
+
+        return None
+
+    def _handle_control(self, command: ControlCommand, raw_text: str, result) -> None:
         ctx = {
             "injector": self._injector,
             "last_dictation": self._interpreter.last_dictation,
         }
         msg = self._interpreter.execute_control(command, ctx)
         logger.info("[CONTROLE] %s → %s", command.type.name, msg)
-
         self._audit.log_control_command(command.type.name, raw_text)
         self._history.add(
-            text=raw_text,
-            entry_type="control",
-            command=command.type.name,
-            success=True,
+            text=raw_text, entry_type="control",
+            command=command.type.name, success=True,
             language=result.language,
             inference_ms=int(result.inference_time_s * 1000),
         )
-
         if msg:
             print(f"  [Controle] {msg}")
 
     def _handle_dictation(self, text: str, raw_text: str, result) -> None:
-        """Para ditado: encaminha para Claude e converte resposta em TTS."""
         injection_enabled = self._cfg.get("injection", "enabled", default=True)
         if injection_enabled:
             injected = self._injector.inject(text)
-            self._audit.log_action(
-                "text_injection", f"Injetou: {text[:80]}", confirmed=True,
-                metadata={"success": injected}
-            )
             status = "[Injetado]" if injected else "[Falha de injeção]"
             print(f"  {status} {text!r}")
-        else:
-            injected = False
 
         self._history.add(
-            text=text,
-            entry_type="dictation",
-            success=True,
+            text=text, entry_type="dictation", success=True,
             language=result.language,
             inference_ms=int(result.inference_time_s * 1000),
         )
         print(f"  [Victor] {text!r}")
 
-        # 2. Captura resposta do Claude e converte em TTS (em background)
         if self._claude_capture_enabled and self._claude and self._tts_enabled:
             if self._tts_streaming and self._tts_engine and self._tts_engine.is_available():
                 self._handle_claude_streaming(text)
@@ -298,14 +351,46 @@ class VoiceProgrammer:
                     on_response=self._on_claude_response,
                 )
 
+    def _build_system_prompt(self, user_text: str) -> str:
+        """Constrói system prompt enriquecido com memória, emoção e contexto VS Code."""
+        parts = []
+
+        # Memória persistente
+        if self._memory and self._cfg.get("memory", "inject_in_context", default=True):
+            summary = self._memory.get_memory_summary()
+            if summary:
+                parts.append(f"## Memórias sobre Victor\n{summary}")
+
+        # Contexto do VS Code
+        vscode_ctx = self._vscode.get_context_for_prompt()
+        if vscode_ctx:
+            parts.append(vscode_ctx)
+
+        # Modificador de tom baseado em emoção
+        if self._last_emotion:
+            modifier = self._emotion_detector.get_tone_modifier(self._last_emotion["state"])
+            if modifier:
+                parts.append(modifier)
+
+        return "\n\n".join(parts) if parts else ""
+
     def _handle_claude_streaming(self, user_text: str) -> None:
-        """
-        Pipeline de streaming: Claude → frases → TTS → áudio.
-        Inicia em thread separada para não bloquear o loop principal.
-        """
         t_start = time.monotonic()
         chunk_queue: queue.Queue = queue.Queue()
         first_chunk_logged = [False]
+
+        # Roteia para o modelo adequado
+        if self._model_router:
+            model_id, tier = self._model_router.route(user_text)
+            if tier != "haiku":
+                logger.info("[ROTEAMENTO] %s → %s", tier, model_id)
+            if hasattr(self._claude, "set_model"):
+                self._claude.set_model(model_id)
+
+        # Injeta contexto extra no system prompt
+        extra_context = self._build_system_prompt(user_text)
+        if extra_context and hasattr(self._claude, "set_extra_context"):
+            self._claude.set_extra_context(extra_context)
 
         def on_chunk(chunk: str) -> None:
             if not first_chunk_logged[0]:
@@ -314,7 +399,6 @@ class VoiceProgrammer:
             chunk_queue.put(chunk)
 
         def on_done(response: Optional[str]) -> None:
-            # Sinaliza fim do stream — CRÍTICO: sem isso o text_iterator bloqueia
             chunk_queue.put(None)
             if response:
                 logger.info("[LATÊNCIA] Claude resposta completa: %.2fs", time.monotonic() - t_start)
@@ -323,9 +407,16 @@ class VoiceProgrammer:
                     inference_ms=int((time.monotonic() - t_start) * 1000),
                     was_truncated=False,
                 )
+                # Salva resposta na memória da sessão
+                if self._memory:
+                    self._memory.save_conversation_turn(
+                        session_id=self._audit._session_id,
+                        role="assistant",
+                        content=response,
+                    )
 
         def run_pipeline() -> None:
-            claude_thread = self._claude.send_streaming_async(user_text, on_chunk, on_done)
+            self._claude.send_streaming_async(user_text, on_chunk, on_done)
 
             def text_iterator():
                 timeout = self._cfg.get("claude_capture", "timeout_seconds", default=60)
@@ -336,12 +427,11 @@ class VoiceProgrammer:
                             break
                         yield chunk
                     except queue.Empty:
-                        logger.warning("Timeout aguardando resposta do Claude.")
+                        logger.warning("Timeout aguardando Claude.")
                         break
 
             pipeline = StreamingTTSPipeline(self._tts_engine, self._audio_player)
             self._streaming_pipeline = pipeline
-
             t_tts_start = [None]
 
             def on_sentence(sentence: str) -> None:
@@ -351,7 +441,6 @@ class VoiceProgrammer:
                 print(f"  [Jarvis] {sentence}")
 
             pipeline.stream(text_iterator(), on_sentence=on_sentence)
-            claude_thread.join(timeout=2)
 
             if t_tts_start[0]:
                 logger.info("[LATÊNCIA] Total (fala→áudio): %.2fs", time.monotonic() - t_start)
@@ -360,125 +449,120 @@ class VoiceProgrammer:
         threading.Thread(target=run_pipeline, daemon=True, name="jarvis-pipeline").start()
 
     def _on_claude_response(self, response: str) -> None:
-        """Callback quando ClaudeCapture recebe resposta do Claude Code."""
-        logger.info("[CLAUDE] %d chars recebidos", len(response))
-
-        # Humaniza a resposta para TTS
         spoken_text = self._humanizer.humanize(response)
-
-        was_truncated = len(spoken_text) < len(response) - 50
         self._audit.log_claude_response(
-            response_text=response,
-            inference_ms=0,
-            was_truncated=was_truncated,
+            response_text=response, inference_ms=0, was_truncated=False,
         )
-
-        if not spoken_text:
-            logger.debug("Resposta do Claude não tem conteúdo falável após humanização.")
-            return
-
-        print(f"\n  [Claude → Voz] {spoken_text[:100]}{'...' if len(spoken_text) > 100 else ''}")
-
-        # Síntese e reprodução
-        self._speak(spoken_text)
+        if self._memory:
+            self._memory.save_conversation_turn(
+                session_id=self._audit._session_id,
+                role="assistant",
+                content=response,
+            )
+        if spoken_text:
+            self._speak(spoken_text)
 
     def _speak(self, text: str) -> None:
-        """Converte texto em áudio e toca."""
         if not self._tts_engine:
-            logger.warning("TTS não carregado ainda. Resposta não será falada.")
             return
-
         try:
             audio_bytes = self._tts_engine.synthesize(text)
             self._audio_player.play(audio_bytes)
-
-            self._audit.log_tts_output(
-                spoken_text=text,
-                engine=self._tts_engine.name,
-            )
+            self._audit.log_tts_output(spoken_text=text, engine=self._tts_engine.name)
         except Exception as exc:
             logger.error("Erro no TTS: %s", exc)
 
     def _is_stop_speaking(self, text: str) -> bool:
-        """Verifica se o texto é um comando para parar o áudio em andamento."""
         import unicodedata, re
-        normalized = re.sub(r"[^\w\s]", "", unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode()).lower().strip()
-        for phrase in self._stop_speaking_phrases:
-            if phrase.lower() in normalized:
-                return True
-        return False
+        normalized = re.sub(r"[^\w\s]", "",
+            unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode()
+        ).lower().strip()
+        return any(p.lower() in normalized for p in self._stop_speaking_phrases)
+
+    def _on_proactive_alert(self, message: str) -> None:
+        """Callback do monitor proativo — Jarvis avisa sobre erros detectados."""
+        alert_text = f"Victor, detectei um erro: {message}"
+        print(f"\n  [Jarvis ⚠] {alert_text}")
+        if self._tts_enabled and self._tts_engine and self._tts_engine.is_available():
+            self._speak(alert_text)
 
     # ── Inicialização dos modelos ────────────────────────────────────────────────
 
     def _load_models(self) -> None:
-        """Carrega Whisper e TTS em thread separada (são lentos para carregar)."""
         print("  Carregando modelos... aguarde.")
 
-        # Whisper
         try:
             self._transcriber = Transcriber(self._cfg)
             print("  ✓ Whisper carregado.")
         except Exception as exc:
             logger.error("Falha ao carregar Whisper: %s", exc)
-            self._tray.set_status("error")
+            self._update_status("error")
 
-        # TTS (opcional — falha não impede o sistema de funcionar)
         if self._tts_enabled:
             try:
                 self._tts_engine = create_tts_engine(self._cfg)
                 if self._tts_engine.is_available():
                     print(f"  ✓ TTS carregado ({self._tts_engine.name}).")
                 else:
-                    print("  ⚠ TTS não disponível — respostas não serão faladas.")
+                    print("  ⚠ TTS não disponível.")
             except Exception as exc:
-                logger.warning("TTS não carregado: %s — sistema continua sem voz de saída.", exc)
+                logger.warning("TTS não carregado: %s", exc)
+
+        # Log de integrações disponíveis
+        integrations = {
+            "Spotify": self._spotify.is_available(),
+            "GitHub": self._github.is_available(),
+            "Google": self._google.is_available(),
+        }
+        for name, available in integrations.items():
+            print(f"  {'✓' if available else '○'} {name}: {'ativo' if available else 'não configurado'}")
 
         if self._transcriber:
-            mode = self._cfg.get("activation", "mode", default="wake_word")
+            mode = self._cfg.get("activation", "mode", default="push_to_talk")
             if mode == "wake_word":
                 words = self._cfg.get("activation", "wake_words", default=["jarvis"])
-                wake_str = " / ".join(f'"{w}"' for w in words)
-                print(f"\n  Sistema pronto! Diga {wake_str} para ativar.\n")
+                print(f"\n  Sistema pronto! Diga {' / '.join(words)} para ativar.\n")
             else:
                 key = self._cfg.get("activation", "push_to_talk_key", default="alt")
                 print(f"\n  Sistema pronto! Segure {key.upper()} e fale.\n")
 
     def _start_mcp(self) -> None:
-        """Inicia servidores MCP. Executado em thread separada."""
         results = self._mcp.start_all()
         if results:
             for name, ok in results.items():
-                status = "✓" if ok else "✗"
-                print(f"  {status} MCP {name}: {'ativo' if ok else 'falhou'}")
+                print(f"  {'✓' if ok else '✗'} MCP {name}: {'ativo' if ok else 'falhou'}")
 
-    # ── Saída ───────────────────────────────────────────────────────────────────
+    # ── Banner ──────────────────────────────────────────────────────────────────
 
     def _print_banner(self) -> None:
         mode = self._cfg.get("activation", "mode", default="push_to_talk")
-        key = self._cfg.get("activation", "push_to_talk_key", default="f9")
+        key = self._cfg.get("activation", "push_to_talk_key", default="alt")
         model = self._cfg.get("transcription", "model", default="small")
-        tts_engine = self._cfg.get("tts", "engine", default="coqui")
-        capture = "sim" if self._claude_capture_enabled else "não"
+        tts_engine = self._cfg.get("tts", "engine", default="edge")
+        dashboard_port = self._cfg.get("ui", "dashboard_port", default=7432)
 
-        streaming_label = "sim (frase a frase)" if self._tts_streaming else "não"
         activation_label = (
             f"wake word ({', '.join(self._cfg.get('activation', 'wake_words', default=['jarvis']))})"
             if mode == "wake_word"
             else f"push-to-talk ({key.upper()})"
         )
+        routing_label = "Haiku/Sonnet/Opus (automático)" if self._model_router else "fixo"
+
         print(f"\n{'='*62}")
-        print("  J A R V I S  —  Assistente de Voz")
+        print("  J A R V I S  —  Assistente Pessoal de Victor Germano")
         print(f"{'='*62}")
         print(f"  Ativação:      {activation_label}")
         print(f"  STT:           Whisper {model}")
-        print(f"  TTS:           {tts_engine} {'(habilitado)' if self._tts_enabled else '(desabilitado)'}")
-        print(f"  Streaming TTS: {streaming_label}")
-        print(f"  Resposta voz:  {capture}")
-        print(f"  Latência alvo: ~1-2s (fala → primeiro áudio de resposta)")
-        print(f"  Audit log:     {self._cfg.get('audit', 'file', default='audit_log.jsonl')}")
+        print(f"  TTS:           {tts_engine}")
+        print(f"  Modelo:        {routing_label}")
+        print(f"  Memória:       {'ativa' if self._memory else 'desativada'}")
+        print(f"  Dashboard:     http://localhost:{dashboard_port}")
+        print(f"  Emoção:        ativa")
         print(f"{'='*62}")
-        print("  Ctrl+C para sair | 'para de falar' ou 'espera' para silenciar")
+        print("  Ctrl+C para sair | 'para de falar' para silenciar")
         print()
+
+    # ── Saída ───────────────────────────────────────────────────────────────────
 
     def _signal_handler(self, signum, frame) -> None:
         logger.info("Sinal %d recebido. Encerrando...", signum)
@@ -490,42 +574,26 @@ class VoiceProgrammer:
     def _cleanup(self) -> None:
         logger.info("Encerrando sistema...")
         self._audio_player.stop()
-        try:
-            self._capture.stop()
-        except Exception:
-            pass
-        try:
-            self._mcp.stop_all()
-        except Exception:
-            pass
-        try:
-            self._tray.stop()
-        except Exception:
-            pass
+        if self._memory:
+            self._memory.close()
+        for obj in [self._capture, self._mcp, self._tray, self._proactive, self._dashboard]:
+            try:
+                obj.stop()
+            except Exception:
+                pass
         logger.info("Sistema encerrado.")
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────
 
-def _print_startup_help() -> None:
-    print("\n[ERRO] Falha ao iniciar captura de áudio.")
-    print("Causas comuns:")
-    print("  - Nenhum microfone conectado")
-    print("  - Permissão negada ao microfone")
-    print("  - sounddevice não instalado: pip install sounddevice")
-    print("\nListagem de dispositivos: python main.py --list-devices\n")
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Programador por Voz — pipeline bidirecional de voz ↔ Claude Code"
-    )
-    parser.add_argument("--config", "-c", default=None, help="Caminho para config.yaml")
-    parser.add_argument("--list-devices", action="store_true", help="Lista microfones e sai")
-    parser.add_argument("--model", default=None, help="Modelo Whisper (tiny/base/small/medium/large-v3)")
-    parser.add_argument("--no-tts", action="store_true", help="Desabilita saída de voz (TTS)")
-    parser.add_argument("--no-capture", action="store_true", help="Desabilita captura de resposta do Claude")
-    parser.add_argument("--debug", action="store_true", help="Logging nível DEBUG")
+    parser = argparse.ArgumentParser(description="J.A.R.V.I.S — Assistente Pessoal de Voz")
+    parser.add_argument("--config", "-c", default=None)
+    parser.add_argument("--list-devices", action="store_true")
+    parser.add_argument("--model", default=None, help="Modelo Whisper (tiny/base/small/medium)")
+    parser.add_argument("--no-tts", action="store_true")
+    parser.add_argument("--no-capture", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     if args.list_devices:
