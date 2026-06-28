@@ -1,0 +1,42 @@
+# Dados gerados em runtime
+audit_log.jsonl
+history.json
+programador_por_voz.log
+*.log
+
+# Modelos de IA baixados (podem ser centenas de MB)
+models/
+model_cache/
+~/.cache/huggingface/
+~/.cache/faster_whisper/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Ambiente virtual
+venv/
+.venv/
+env/
+
+# Credenciais e segredos — NUNCA commitar
+.env
+*.env
+.env.local
+secrets.yaml
+credentials.json
+
+# VS Code
+.vscode/
+
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini

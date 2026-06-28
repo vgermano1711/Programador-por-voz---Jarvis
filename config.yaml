@@ -3,8 +3,8 @@
 
 # ─── Ativação ──────────────────────────────────────────────────────────────────
 activation:
-  mode: wake_word              # "push_to_talk" | "wake_word" — wake_word é o padrão Jarvis
-  push_to_talk_key: "alt"      # Fallback push-to-talk (segurar Alt para falar)
+  mode: push_to_talk              # "push_to_talk" | "wake_word" — wake_word é o padrão Jarvis
+  push_to_talk_key: "ctrl_r"       # Ctrl direito (confirmado via test_hotkey)
   wake_words:                  # Palavras de ativação
     - jarvis
   wake_word_engine: openwakeword  # "openwakeword" | "porcupine"
@@ -17,7 +17,7 @@ audio:
   sample_rate: 16000          # Taxa de amostragem (Hz) — Whisper usa 16000
   channels: 1                 # Mono
   chunk_duration_ms: 30       # Tamanho do chunk de áudio em ms (para VAD)
-  max_recording_seconds: 30   # Tempo máximo de uma gravação (segurança)
+  max_recording_seconds: 300  # 5 minutos — efetivamente ilimitado para conversa
 
 # ─── Transcrição ───────────────────────────────────────────────────────────────
 transcription:
@@ -27,13 +27,13 @@ transcription:
   #   small   — ~244M params, ~2s latência, boa precisão. PADRÃO RECOMENDADO.
   #   medium  — ~769M params, ~4s latência, precisão alta. Bom para jargão técnico.
   #   large-v3 — ~1.5B params, ~8s latência, precisão máxima. Requer GPU/RAM.
-  model: small
+  model: tiny
   device: cpu                 # "cpu" | "cuda" | "auto"
   compute_type: int8          # "int8" (CPU) | "float16" (GPU) | "float32"
   language: pt                # Idioma forçado. null = detecção automática
   language_fallback: null     # Idioma de fallback se confiança < threshold
   language_confidence_threshold: 0.7
-  beam_size: 5                # Qualidade do beam search (1=rápido, 5=preciso)
+  beam_size: 1                # 1=máxima velocidade (vs 5=máxima precisão)
   initial_prompt: "Código Python, terminal, programação em português."
 
 # ─── VAD (Voice Activity Detection) ───────────────────────────────────────────
@@ -75,8 +75,9 @@ control_commands:
 
 # ─── Injeção de Texto ──────────────────────────────────────────────────────────
 injection:
-  method: clipboard           # "clipboard" | "type" (clipboard é mais confiável)
-  auto_enter: true            # Pressionar Enter ao final do texto injetado
+  enabled: false              # Desabilitado — Jarvis opera como assistente de voz puro
+  method: clipboard
+  auto_enter: true
   paste_delay_ms: 100         # Delay entre colar e pressionar Enter
   valid_terminals:            # Nomes de janela considerados terminais válidos
     - terminal
@@ -125,9 +126,9 @@ tts:
   #   "coqui"      = local/offline, gratuito, qualidade inferior
   engine: edge
   # Edge TTS
-  edge_voice: pt-PT-DuarteNeural  # Masculino, europeu, formal — perfil "assistente sóbrio"
-  edge_rate: "+0%"                 # Velocidade: "-10%" = mais lento, "+10%" = mais rápido
-  edge_pitch: "-5Hz"               # Tom levemente mais grave para soar mais formal
+  edge_voice: pt-BR-AntonioNeural  # Masculino brasileiro (voz confirmada no edge-tts)
+  edge_rate: "+15%"                # Mais rápido — energia e confiança
+  edge_pitch: "+8Hz"               # Tom mais agudo/animado
   # Coqui TTS (fallback offline)
   coqui_model: tts_models/pt/cv/vits
   coqui_gpu: false
@@ -135,7 +136,7 @@ tts:
   elevenlabs_voice_id: "21m00Tcm4TlvDq8ikWAM"
   elevenlabs_model_id: eleven_multilingual_v2
   # Configurações gerais
-  streaming: true               # Sintetiza frase a frase para menor latência percebida
+  streaming: true                # Sintetiza frase a frase — Jarvis fala enquanto pensa
   humanizer_max_chars: 800
   humanizer_announce_code: true
   stop_speaking_phrases:
@@ -144,17 +145,17 @@ tts:
     - silencia
     - espera
     - chega
-  sample_rate: 22050
+  sample_rate: 24000
 
 # ─── Captura de Resposta do Claude ────────────────────────────────────────────
-# Abordagem escolhida: subprocess com `claude --print`
-# Veja response_capture/claude_subprocess.py para justificativa completa.
 claude_capture:
   enabled: true
-  claude_bin: claude              # binário do Claude Code no PATH
+  claude_bin: "C:\\Users\\vgerm\\AppData\\Roaming\\npm\\claude.cmd"
   timeout_seconds: 60
-  max_history_turns: 10           # turnos de contexto mantidos entre calls
-  system_prompt: ""               # deixe vazio para usar o CLAUDE.md do projeto
+  max_history_turns: 10
+  model: "claude-haiku-4-5-20251001"   # Haiku: ~1-2s latência vs ~7s do Sonnet
+  max_tokens: 512
+  system_prompt: ""
 
 # ─── Auditoria ────────────────────────────────────────────────────────────────
 audit:
@@ -175,3 +176,8 @@ mcp:
   browser:
     enabled: false
     headless: true                # false = abre janela visível do browser
+
+
+
+
+

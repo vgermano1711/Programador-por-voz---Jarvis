@@ -30,6 +30,9 @@ Pillow>=10.0.0
 # Config
 PyYAML>=6.0.1
 
+# Claude / Anthropic API (backend principal do Jarvis)
+anthropic>=0.40.0
+
 # Testing
 pytest>=8.0.0
 pytest-mock>=3.12.0

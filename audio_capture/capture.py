@@ -191,11 +191,21 @@ class AudioCapture:
         # Teclas especiais: cmd, alt, ctrl, shift, tab, f1-f12, etc.
         special = {
             "cmd": kb.Key.cmd, "win": kb.Key.cmd, "super": kb.Key.cmd,
-            "alt": kb.Key.alt, "alt_l": kb.Key.alt, "alt_r": kb.Key.alt_r,
+            "alt": kb.Key.alt, "alt_l": kb.Key.alt_l, "alt_r": kb.Key.alt_r,
             "ctrl": kb.Key.ctrl, "ctrl_l": kb.Key.ctrl_l, "ctrl_r": kb.Key.ctrl_r,
-            "shift": kb.Key.shift,
+            "shift": kb.Key.shift, "shift_l": kb.Key.shift_l, "shift_r": kb.Key.shift_r,
+            "left_shift": kb.Key.shift_l, "right_shift": kb.Key.shift_r,
+            "left_ctrl": kb.Key.ctrl_l, "right_ctrl": kb.Key.ctrl_r,
+            "left_alt": kb.Key.alt_l, "right_alt": kb.Key.alt_r,
             "tab": kb.Key.tab, "space": kb.Key.space,
             "esc": kb.Key.esc, "enter": kb.Key.enter,
+            "scroll_lock": kb.Key.scroll_lock,
+            "pause": kb.Key.pause,
+            "caps_lock": kb.Key.caps_lock,
+            "print_screen": kb.Key.print_screen,
+            "insert": kb.Key.insert, "delete": kb.Key.delete,
+            "home": kb.Key.home, "end": kb.Key.end,
+            "page_up": kb.Key.page_up, "page_down": kb.Key.page_down,
         }
         for i in range(1, 13):
             special[f"f{i}"] = getattr(kb.Key, f"f{i}")

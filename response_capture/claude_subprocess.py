@@ -138,9 +138,9 @@ class ClaudeCapture:
         """Versão não-bloqueante de send_streaming. Dispara on_done ao terminar."""
         def worker():
             response = self.send_streaming(user_message, on_chunk)
-            if on_done and response:
+            if on_done:
                 try:
-                    on_done(response)
+                    on_done(response)  # chamado sempre, mesmo se response=None (falha)
                 except Exception as exc:
                     logger.error("Erro em on_done: %s", exc)
 

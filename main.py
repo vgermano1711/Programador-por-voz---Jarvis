@@ -30,6 +30,7 @@ para a justificativa da abordagem escolhida (subprocess vs pty).
 """
 
 import argparse
+import os
 import queue
 import signal
 import sys
@@ -52,6 +53,7 @@ from tray import TrayApp
 from tray.overlay import RecordingOverlay
 from audit import AuditLogger
 from response_capture import ClaudeCapture
+from response_capture.anthropic_client import AnthropicClient
 from response_humanizer import Humanizer
 from tts import create_tts_engine
 from tts.player import AudioPlayer
@@ -102,10 +104,22 @@ class VoiceProgrammer:
         self._claude_capture_enabled: bool = self._cfg.get(
             "claude_capture", "enabled", default=True
         )
-        self._claude = ClaudeCapture(self._cfg) if self._claude_capture_enabled else None
+        # Usa API Anthropic direta se disponível; fallback para subprocess CLI
+        if self._claude_capture_enabled:
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                self._claude = AnthropicClient(self._cfg)
+                logger.info("Backend: API Anthropic direta")
+            else:
+                self._claude = ClaudeCapture(self._cfg)
+                logger.info("Backend: claude --print subprocess")
+        else:
+            self._claude = None
 
         # ── MCP ─────────────────────────────────────────────────────────────────
         self._mcp = MCPManager(self._cfg)
+
+        # Transcriber iniciado em None — carregado em _load_models (thread separada)
+        self._transcriber: Optional[Transcriber] = None
 
         # ── Captura de áudio (último — depende de callbacks acima) ─────────────
         self._capture = AudioCapture(self._cfg, on_audio=self._on_audio)
@@ -116,7 +130,11 @@ class VoiceProgrammer:
         self._capture.on_status_change = _on_status
 
         self._running = False
-        self._transcriber: Optional[Transcriber] = None
+
+    def _update_status(self, status: str) -> None:
+        """Atualiza bandeja E overlay — sempre use isso, nunca self._tray.set_status direto."""
+        self._tray.set_status(status)
+        self._overlay.set_status(status)
 
     def _setup_logging(self) -> None:
         log_cfg = self._cfg.get("logging") or {}
@@ -172,10 +190,10 @@ class VoiceProgrammer:
         """
         if self._transcriber is None:
             logger.warning("Modelos ainda carregando... tente novamente em instantes.")
-            self._tray.set_status("idle")
+            self._update_status("idle")
             return
 
-        self._tray.set_status("processing")
+        self._update_status("processing")
         t_audio_end = time.monotonic()
 
         # 1. Transcrição
@@ -183,9 +201,9 @@ class VoiceProgrammer:
             result = self._transcriber.transcribe(audio, sample_rate)
         except Exception as exc:
             logger.error("Erro na transcrição: %s", exc)
-            self._tray.set_status("error")
+            self._update_status("error")
             time.sleep(1)
-            self._tray.set_status("idle")
+            self._update_status("idle")
             return
 
         t_transcribed = time.monotonic()
@@ -193,7 +211,7 @@ class VoiceProgrammer:
 
         if result is None:
             logger.info("Transcrição vazia (silêncio ou VAD).")
-            self._tray.set_status("idle")
+            self._update_status("idle")
             return
 
         text = result.text
@@ -210,7 +228,7 @@ class VoiceProgrammer:
             if self._streaming_pipeline:
                 self._streaming_pipeline.stop()
             logger.info("Reprodução de áudio interrompida por comando de voz.")
-            self._tray.set_status("idle")
+            self._update_status("idle")
             return
 
         # 3. Interpreta comando
@@ -221,7 +239,7 @@ class VoiceProgrammer:
         else:
             self._handle_dictation(interpreted, text, result)
 
-        self._tray.set_status("idle")
+        self._update_status("idle")
 
     def _handle_control(
         self, command: ControlCommand, raw_text: str, result
@@ -248,27 +266,27 @@ class VoiceProgrammer:
             print(f"  [Controle] {msg}")
 
     def _handle_dictation(self, text: str, raw_text: str, result) -> None:
-        """
-        Para ditado literal:
-        1. Injeta no terminal (para o Claude Code interativo ver)
-        2. Paralelamente chama claude --print para capturar resposta e converter em TTS
-        """
-        # 1. Injeção no terminal ativo
-        injected = self._injector.inject(text)
-        self._audit.log_action(
-            "text_injection", f"Injetou: {text[:80]}", confirmed=True,
-            metadata={"success": injected}
-        )
+        """Para ditado: encaminha para Claude e converte resposta em TTS."""
+        injection_enabled = self._cfg.get("injection", "enabled", default=True)
+        if injection_enabled:
+            injected = self._injector.inject(text)
+            self._audit.log_action(
+                "text_injection", f"Injetou: {text[:80]}", confirmed=True,
+                metadata={"success": injected}
+            )
+            status = "[Injetado]" if injected else "[Falha de injeção]"
+            print(f"  {status} {text!r}")
+        else:
+            injected = False
+
         self._history.add(
             text=text,
             entry_type="dictation",
-            success=injected,
+            success=True,
             language=result.language,
             inference_ms=int(result.inference_time_s * 1000),
         )
-
-        status = "[Injetado]" if injected else "[Falha de injeção]"
-        print(f"  {status} {text!r}")
+        print(f"  [Victor] {text!r}")
 
         # 2. Captura resposta do Claude e converte em TTS (em background)
         if self._claude_capture_enabled and self._claude and self._tts_enabled:
@@ -295,28 +313,30 @@ class VoiceProgrammer:
                 logger.info("[LATÊNCIA] Claude primeiro chunk: %.2fs", time.monotonic() - t_start)
             chunk_queue.put(chunk)
 
-        def on_done(response: str) -> None:
-            logger.info("[LATÊNCIA] Claude resposta completa: %.2fs", time.monotonic() - t_start)
-            self._audit.log_claude_response(
-                response_text=response,
-                inference_ms=int((time.monotonic() - t_start) * 1000),
-                was_truncated=False,
-            )
+        def on_done(response: Optional[str]) -> None:
+            # Sinaliza fim do stream — CRÍTICO: sem isso o text_iterator bloqueia
+            chunk_queue.put(None)
+            if response:
+                logger.info("[LATÊNCIA] Claude resposta completa: %.2fs", time.monotonic() - t_start)
+                self._audit.log_claude_response(
+                    response_text=response,
+                    inference_ms=int((time.monotonic() - t_start) * 1000),
+                    was_truncated=False,
+                )
 
         def run_pipeline() -> None:
-            # Inicia Claude em thread separada enquanto o pipeline consome a fila
             claude_thread = self._claude.send_streaming_async(user_text, on_chunk, on_done)
 
             def text_iterator():
+                timeout = self._cfg.get("claude_capture", "timeout_seconds", default=60)
                 while True:
                     try:
-                        chunk = chunk_queue.get(timeout=self._cfg.get(
-                            "claude_capture", "timeout_seconds", default=60
-                        ))
+                        chunk = chunk_queue.get(timeout=timeout)
                         if chunk is None:
                             break
                         yield chunk
                     except queue.Empty:
+                        logger.warning("Timeout aguardando resposta do Claude.")
                         break
 
             pipeline = StreamingTTSPipeline(self._tts_engine, self._audio_player)
@@ -327,18 +347,15 @@ class VoiceProgrammer:
             def on_sentence(sentence: str) -> None:
                 if t_tts_start[0] is None:
                     t_tts_start[0] = time.monotonic()
-                    logger.info("[LATÊNCIA] Primeira frase para TTS: %.2fs", t_tts_start[0] - t_start)
+                    logger.info("[LATÊNCIA] Primeira frase TTS: %.2fs", t_tts_start[0] - t_start)
                 print(f"  [Jarvis] {sentence}")
 
             pipeline.stream(text_iterator(), on_sentence=on_sentence)
             claude_thread.join(timeout=2)
 
             if t_tts_start[0]:
-                logger.info("[LATÊNCIA] Pipeline total (fala→áudio): %.2fs", time.monotonic() - t_start)
-
+                logger.info("[LATÊNCIA] Total (fala→áudio): %.2fs", time.monotonic() - t_start)
             self._streaming_pipeline = None
-            # Sinaliza fim para o iterador
-            chunk_queue.put(None)
 
         threading.Thread(target=run_pipeline, daemon=True, name="jarvis-pipeline").start()
 
