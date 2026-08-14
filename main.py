@@ -52,6 +52,15 @@ from tts.player import AudioPlayer
 from tts.streaming_pipeline import StreamingTTSPipeline
 from mcp_servers import MCPManager
 
+
+class _PipelineStarting:
+    """Sentinel placed in _streaming_pipeline while the pipeline thread is launching
+    but before the StreamingTTSPipeline object exists.  Exposes .stop() so all
+    callers can call it unconditionally without hasattr checks."""
+
+    def stop(self) -> None:
+        pass  # generation counter handles cancellation at this stage
+
 # ── Novos módulos ───────────────────────────────────────────────────────────────
 from memory.persistent import PersistentMemory
 from model_router.router import ModelRouter
@@ -113,7 +122,6 @@ class VoiceProgrammer:
 
         # ── TTS e player ────────────────────────────────────────────────────────
         self._tts_enabled: bool = self._cfg.get("tts", "enabled", default=True)
-        self._tts_streaming: bool = self._cfg.get("tts", "streaming", default=True)
         self._tts_engine = None
         self._audio_player = AudioPlayer(
             sample_rate=self._cfg.get("tts", "sample_rate", default=22050)
@@ -124,6 +132,7 @@ class VoiceProgrammer:
             default=["para de falar", "cala a boca", "silencia", "espera", "chega"]
         )
         self._streaming_pipeline: Optional[StreamingTTSPipeline] = None
+        self._pipeline_gen: int = 0  # incremented on every new request; old threads bail when they see a mismatch
 
         # ── Captura de resposta do Claude ───────────────────────────────────────
         self._claude_capture_enabled: bool = self._cfg.get(
@@ -151,6 +160,14 @@ class VoiceProgrammer:
             self._tray.set_status(status)
             self._overlay.set_status(status)
             self._dashboard.update_status(status)
+            # Para o TTS imediatamente ao pressionar a tecla de gravação,
+            # antes de o microfone começar a capturar — evita o mic gravar a própria voz do Jarvis
+            if status == "recording":
+                self._pipeline_gen += 1  # invalidates any in-flight pipeline thread
+                if self._streaming_pipeline is not None:
+                    self._streaming_pipeline.stop()
+                    self._streaming_pipeline = None
+                self._audio_player.stop()
 
         self._capture.on_status_change = _on_status
         self._running = False
@@ -246,7 +263,14 @@ class VoiceProgrammer:
             self._update_status("idle")
             return
 
-        text = result.text
+        text = result.text.strip()
+
+        # Descarta transcrições muito curtas ou claramente com ruído (< 4 chars)
+        if len(text) < 4:
+            logger.debug("Transcrição descartada (muito curta): %r", text)
+            self._update_status("idle")
+            return
+
         self._audit.log_voice_input(
             transcribed_text=text,
             duration_ms=int(result.duration_s * 1000),
@@ -343,26 +367,20 @@ class VoiceProgrammer:
         )
         print(f"  [Victor] {text!r}")
 
-        if self._claude_capture_enabled and self._claude and self._tts_enabled:
-            if self._tts_streaming and self._tts_engine and self._tts_engine.is_available():
-                self._handle_claude_streaming(text)
-            else:
-                self._claude.send_async(
-                    user_message=text,
-                    on_response=self._on_claude_response,
-                )
+        if self._claude_capture_enabled and self._claude:
+            self._handle_claude_streaming(text)
 
     def _build_system_prompt(self, user_text: str) -> str:
-        """Constrói system prompt enriquecido com memória, emoção e contexto VS Code."""
+        """Constrói system prompt enriquecido com memória relevante, emoção e contexto VS Code."""
         parts = []
 
-        # Memória persistente
+        # Apenas memórias relevantes à query atual (não todas)
         if self._memory and self._cfg.get("memory", "inject_in_context", default=True):
-            summary = self._memory.get_memory_summary()
-            if summary:
-                parts.append(f"## Memórias sobre Victor\n{summary}")
+            relevant = self._memory.get_relevant_memories(user_text, limit=5)
+            if relevant:
+                parts.append(relevant)
 
-        # Contexto do VS Code
+        # Contexto do VS Code (já limitado a 2000 chars em vscode_context.py)
         vscode_ctx = self._vscode.get_context_for_prompt()
         if vscode_ctx:
             parts.append(vscode_ctx)
@@ -376,6 +394,22 @@ class VoiceProgrammer:
         return "\n\n".join(parts) if parts else ""
 
     def _handle_claude_streaming(self, user_text: str) -> None:
+        # Increment generation first — any running thread will detect the mismatch
+        # and bail at its next guard check.
+        self._pipeline_gen += 1
+        my_gen = self._pipeline_gen
+
+        # Hard-stop whatever is playing RIGHT NOW before we start anything new.
+        # _on_status("recording") only fires on key-DOWN; by the time transcription
+        # completes (~2 s) and we arrive here, the previous pipeline may still be
+        # running with its _stop_event never set (especially when the key-DOWN
+        # arrived while the sentinel `True` was in place and was silently ignored).
+        if self._streaming_pipeline is not None:
+            self._streaming_pipeline.stop()
+        self._audio_player.stop()
+
+        self._streaming_pipeline = _PipelineStarting()
+
         t_start = time.monotonic()
         chunk_queue: queue.Queue = queue.Queue()
         first_chunk_logged = [False]
@@ -394,21 +428,22 @@ class VoiceProgrammer:
             self._claude.set_extra_context(extra_context)
 
         def on_chunk(chunk: str) -> None:
+            if self._pipeline_gen != my_gen:
+                return  # superseded — discard chunk, don't feed the abandoned pipeline
             if not first_chunk_logged[0]:
                 first_chunk_logged[0] = True
                 logger.info("[LATÊNCIA] Claude primeiro chunk: %.2fs", time.monotonic() - t_start)
             chunk_queue.put(chunk)
 
         def on_done(response: Optional[str]) -> None:
-            chunk_queue.put(None)
-            if response:
+            chunk_queue.put(None)  # always signal end so text_iterator exits cleanly
+            if response and self._pipeline_gen == my_gen:
                 logger.info("[LATÊNCIA] Claude resposta completa: %.2fs", time.monotonic() - t_start)
                 self._audit.log_claude_response(
                     response_text=response,
                     inference_ms=int((time.monotonic() - t_start) * 1000),
                     was_truncated=False,
                 )
-                # Salva resposta na memória da sessão
                 if self._memory:
                     self._memory.save_conversation_turn(
                         session_id=self._audit._session_id,
@@ -417,6 +452,10 @@ class VoiceProgrammer:
                     )
 
         def run_pipeline() -> None:
+            # Guard 1 — bail before even calling the API if already superseded
+            if self._pipeline_gen != my_gen:
+                return
+
             self._claude.send_streaming_async(user_text, on_chunk, on_done)
 
             def text_iterator():
@@ -426,13 +465,17 @@ class VoiceProgrammer:
                         chunk = chunk_queue.get(timeout=timeout)
                         if chunk is None:
                             break
+                        if self._pipeline_gen != my_gen:
+                            break  # superseded while waiting — stop feeding TTS
                         yield chunk
                     except queue.Empty:
                         logger.warning("Timeout aguardando Claude.")
                         break
 
-            pipeline = StreamingTTSPipeline(self._tts_engine, self._audio_player)
-            self._streaming_pipeline = pipeline
+            # Guard 2 — bail before creating pipeline if superseded while API was in flight
+            if self._pipeline_gen != my_gen:
+                return
+
             t_tts_start = [None]
 
             def on_sentence(sentence: str) -> None:
@@ -441,27 +484,27 @@ class VoiceProgrammer:
                     logger.info("[LATÊNCIA] Primeira frase TTS: %.2fs", t_tts_start[0] - t_start)
                 print(f"  [Jarvis] {sentence}")
 
-            pipeline.stream(text_iterator(), on_sentence=on_sentence)
+            if self._tts_enabled and self._tts_engine and self._tts_engine.is_available():
+                pipeline = StreamingTTSPipeline(self._tts_engine, self._audio_player)
+
+                # Guard 3 — bail before registering the pipeline object (race-free handoff)
+                if self._pipeline_gen != my_gen:
+                    return
+
+                self._streaming_pipeline = pipeline
+                pipeline.stream(text_iterator(), on_sentence=on_sentence)
+            else:
+                # TTS indisponível — consome o iterator e só imprime no terminal
+                for chunk in text_iterator():
+                    pass  # on_chunk já acumula; on_done imprimiu via print
 
             if t_tts_start[0]:
                 logger.info("[LATÊNCIA] Total (fala→áudio): %.2fs", time.monotonic() - t_start)
-            self._streaming_pipeline = None
+            # Only clear the reference if we're still the active pipeline
+            if self._pipeline_gen == my_gen:
+                self._streaming_pipeline = None
 
         threading.Thread(target=run_pipeline, daemon=True, name="jarvis-pipeline").start()
-
-    def _on_claude_response(self, response: str) -> None:
-        spoken_text = self._humanizer.humanize(response)
-        self._audit.log_claude_response(
-            response_text=response, inference_ms=0, was_truncated=False,
-        )
-        if self._memory:
-            self._memory.save_conversation_turn(
-                session_id=self._audit._session_id,
-                role="assistant",
-                content=response,
-            )
-        if spoken_text:
-            self._speak(spoken_text)
 
     def _speak(self, text: str) -> None:
         if not self._tts_engine:
@@ -547,7 +590,7 @@ class VoiceProgrammer:
             if mode == "wake_word"
             else f"push-to-talk ({key.upper()})"
         )
-        routing_label = "Haiku/Sonnet/Opus (automático)" if self._model_router else "fixo"
+        routing_label = "Haiku/Sonnet (automático)" if self._model_router else "fixo"
 
         print(f"\n{'='*62}")
         print("  J A R V I S  —  Assistente Pessoal de Victor Germano")
