@@ -1,45 +1,43 @@
-# J.A.R.V.I.S — Assistente Pessoal de Voz de Victor Germano
+# Jarvis — Assistente Pessoal de Voz
 
-> Eu construí o Jarvis. De verdade.
-
-Não o personagem de ficção — mas o mais próximo que a tecnologia atual permite.
-
-Por anos assisti ao Tony Stark falar com uma IA que o entendia, aconselhava, executava tarefas e alertava sobre riscos em tempo real. Decidi parar de assistir e construir.
+> Assistente de IA com voz bidirecional, integrado ao ambiente de desenvolvimento (VS Code), com latência de aproximadamente 1 segundo entre o comando falado e o início da resposta.
 
 ---
 
-## O que é
+## Sobre o Projeto
 
-Um assistente pessoal de IA com voz bidirecional, rodando localmente no Windows, integrado ao meu ambiente de desenvolvimento. Ele me ouve, raciocina, aconselha e responde em voz — em menos de 1 segundo.
+Assistente pessoal de IA com reconhecimento e síntese de voz bidirecional, rodando localmente, desenvolvido em Python com a Claude API (Anthropic). O sistema captura o comando por push-to-talk, transcreve, processa com IA e responde em áudio.
+
+Além de executar comandos, o sistema é projetado para opinar sobre decisões técnicas, sugerir alternativas e sinalizar riscos — não apenas confirmar instruções.
+
+Exemplo de interação:
 
 ```
-[Você segura Ctrl+R e fala]
-Victor: "Jarvis, essa função está grande demais."
+[Push-to-talk: Ctrl+R]
+Usuário: "Jarvis, essa função está grande demais."
 
-[~1s depois, Jarvis responde em voz]
-Jarvis: "Victor, ela tem três responsabilidades distintas.
+[~1s depois, resposta em voz]
+Jarvis: "Ela tem três responsabilidades distintas.
          Eu quebraria em duas. Quer que eu faça agora?"
 ```
 
-Ele não só executa — ele opina, sugere alternativas, avisa quando algo pode dar errado e diz quando não sabe.
-
 ---
 
-## O que ele faz hoje
+## Funcionalidades
 
 | Funcionalidade | Detalhe |
 |---|---|
-| **Voz bidirecional** | Responde em ~1s, frase a frase, enquanto ainda está pensando |
-| **Roteamento de modelos** | Escolhe automaticamente entre Haiku, Sonnet e Opus pela complexidade |
-| **Memória persistente** | Lembra conversas e decisões entre sessões (SQLite) |
-| **Detecção de emoção** | Detecta estresse, animação ou cansaço no tom de voz e ajusta a resposta |
-| **Contexto do VS Code** | Sabe qual arquivo você está editando e usa como contexto |
-| **Spotify** | "toca The Weeknd", "próxima", "volume 70" |
-| **Google Calendar/Gmail** | "o que tenho hoje?", "quantos emails não lidos?" |
-| **GitHub** | "quais são as PRs abertas?", "últimos commits", "cria issue" |
-| **Monitor proativo** | Detecta erros no terminal e avisa em voz automaticamente |
-| **Dashboard web** | Interface em localhost:7432 com histórico de conversas |
-| **HUD estilo Iron Man** | Overlay visual que pulsa enquanto ouve |
+| Voz bidirecional | Resposta em streaming por frase, com latência de ~1s |
+| Roteamento de modelos | Seleção automática entre Haiku, Sonnet e Opus por complexidade da tarefa |
+| Memória persistente | Histórico de conversas e decisões entre sessões (SQLite) |
+| Detecção de tom de voz | Ajusta a resposta conforme sinais de estresse, entusiasmo ou cansaço |
+| Contexto do VS Code | Usa o arquivo em edição como contexto da conversa |
+| Integração com Spotify | Controle de reprodução por comando de voz |
+| Integração com Google Calendar/Gmail | Consulta de agenda e caixa de entrada |
+| Integração com GitHub | Consulta de PRs, commits e criação de issues |
+| Monitor proativo | Detecta erros no terminal e notifica por voz |
+| Dashboard web | Interface local (porta 7432) com histórico de conversas |
+| Overlay visual | Indicador visual de escuta ativa |
 
 ---
 
@@ -47,31 +45,43 @@ Ele não só executa — ele opina, sugere alternativas, avisa quando algo pode 
 
 ```
 Microfone (push-to-talk: Ctrl+R)
-   ↓
-faster-whisper — transcrição local em ~0.3s
-   ↓
-Detecção de emoção no tom de voz
-   ↓
-ModelRouter — Haiku / Sonnet / Opus (automático)
-   ↓
-Claude API (Anthropic) — resposta em ~0.8s
-   ↓
-Humanizer — remove markdown, bullets, código
-   ↓
-Edge TTS (pt-BR-AntonioNeural) — streaming por frase
-   ↓
-Alto-falante
+   |
+faster-whisper — transcrição local (~0.3s)
+   |
+Detecção de tom de voz
+   |
+Roteamento de modelo — Haiku / Sonnet / Opus (automático)
+   |
+Claude API (Anthropic) — geração da resposta (~0.8s)
+   |
+Humanizer — remove markdown, bullets e blocos de código da resposta em voz
+   |
+Edge TTS (pt-BR-AntonioNeural) — síntese em streaming por frase
+   |
+Saída de áudio
 
-Latência total: ~1s da fala até o Jarvis começar a responder.
+Latência total: ~1s entre o fim da fala e o início da resposta.
 ```
 
 ---
 
-## Stack
+## Tecnologias
 
-`faster-whisper` · `Claude API (Anthropic)` · `Edge TTS` · `Spotify API` · `Google Calendar/Gmail API` · `GitHub API` · `SQLite` · `Flask` · `pynput` · `tkinter` · Python puro
+| Camada | Tecnologia |
+|---|---|
+| Linguagem | Python |
+| IA | Claude API (Anthropic) |
+| Reconhecimento de voz | faster-whisper |
+| Síntese de voz | Edge TTS |
+| Memória | SQLite |
+| Integração Spotify | Spotify API |
+| Integração Google | Google Calendar/Gmail API |
+| Integração GitHub | GitHub API |
+| Interface | tkinter |
+| Dashboard | Flask |
+| Hotkey global | pynput |
 
-96 testes unitários. Setup automático em um comando.
+Suíte de 96 testes automatizados. Setup de integrações via script interativo (`setup_integrations.py`).
 
 ---
 
@@ -85,13 +95,13 @@ set ANTHROPIC_API_KEY=sk-ant-...
 py main.py
 ```
 
-## Configurar integrações
+### Configurar integrações
 
 ```powershell
 py setup_integrations.py
 ```
 
-Guia interativo que configura Spotify, GitHub e Google automaticamente.
+Wizard interativo que configura Spotify, GitHub e Google.
 
 ---
 
@@ -100,29 +110,31 @@ Guia interativo que configura Spotify, GitHub e Google automaticamente.
 ```
 jarvis/
 ├── main.py                    # Orquestrador principal
-├── config.yaml                # Configuração completa
-├── CLAUDE.md                  # Personalidade do Jarvis
+├── config.yaml                # Configuração
+├── CLAUDE.md                  # Definição de comportamento do assistente
 ├── setup_integrations.py      # Wizard de configuração
-├── audio_capture/             # Captura de áudio e push-to-talk
-├── transcription/             # Whisper (faster-whisper)
-├── response_capture/          # Cliente API Anthropic
-├── model_router/              # Roteamento Haiku/Sonnet/Opus
-├── memory/                    # Memória persistente (SQLite)
-├── emotion/                   # Detecção de emoção no tom de voz
-├── integrations/              # Spotify, GitHub, Google, VS Code
-├── proactive/                 # Monitor de erros no terminal
-├── dashboard/                 # Dashboard web (Flask)
-├── tts/                       # Síntese de voz (edge-tts)
-├── tray/                      # Bandeja do sistema + overlay HUD
-└── tests/                     # 96 testes unitários
+├── audio_capture/              # Captura de áudio e push-to-talk
+├── transcription/               # faster-whisper
+├── response_capture/            # Cliente da API Anthropic
+├── model_router/                 # Roteamento Haiku/Sonnet/Opus
+├── memory/                      # Persistência (SQLite)
+├── emotion/                     # Detecção de tom de voz
+├── integrations/                # Spotify, GitHub, Google, VS Code
+├── proactive/                   # Monitor de erros no terminal
+├── dashboard/                   # Dashboard web (Flask)
+├── tts/                         # Síntese de voz (Edge TTS)
+├── tray/                        # Bandeja do sistema e overlay
+└── tests/                       # Suíte de testes (96 testes)
 ```
+
+---
+
+## Autor
+
+**Victor Germano** — Desenvolvedor Web Full Stack, IA & Automação
 
 ---
 
 ## Licença
 
-MIT — use, modifique e distribua à vontade.
-
----
-
-Construído por **Victor Germano** com assistência do Claude Code (Anthropic).
+MIT License
